@@ -16,7 +16,7 @@ let customTasks = [
 ];
 
 let gameState = {
-  status: 'LOBBY',
+  status: 'LOBBY', // LOBBY, PLAYING, MEETING, ENDED
   players: {},
   impostorId: null,
   deadBodies: [],
@@ -61,12 +61,35 @@ io.on('connection', (socket) => {
       if (player.role === 'Crewmate') {
         const shuffled = [...customTasks].sort(() => 0.5 - Math.random());
         player.tasks = shuffled.slice(0, 3).map(t => ({ text: t, done: false }));
+      } else {
+        player.tasks = [];
       }
     });
 
     gameState.status = 'PLAYING';
     gameState.deadBodies = [];
     io.emit('gameStarted');
+    io.emit('stateUpdate', getPublicState());
+  });
+
+  // HOST OVERRIDE CONTROLS
+  socket.on('hostForceMeeting', () => {
+    if (gameState.status === 'PLAYING') {
+      gameState.status = 'MEETING';
+      io.emit('notifyEmergencyMeeting', { caller: 'HOST COMMAND' });
+      io.emit('stateUpdate', getPublicState());
+    }
+  });
+
+  socket.on('hostEndGame', () => {
+    gameState.status = 'LOBBY';
+    gameState.deadBodies = [];
+    gameState.votes = {};
+    Object.values(gameState.players).forEach(p => {
+      p.alive = true;
+      p.role = 'Crewmate';
+      p.tasks = [];
+    });
     io.emit('stateUpdate', getPublicState());
   });
 
@@ -88,7 +111,7 @@ io.on('connection', (socket) => {
     gameState.status = 'MEETING';
 
     io.emit('notifyBodyFound', {
-      reporter: gameState.players[socket.id]?.name,
+      reporter: gameState.players[socket.id]?.name || 'Someone',
       victim: victimName
     });
     io.emit('stateUpdate', getPublicState());
@@ -112,19 +135,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('castVote', (targetId) => {
-    if (gameState.status === 'MEETING' && gameState.players[socket.id]?.alive) {
-      gameState.votes[socket.id] = targetId;
-
-      const activePlayers = Object.values(gameState.players).filter(p => p.alive);
-      if (Object.keys(gameState.votes).length >= activePlayers.length) {
-        gameState.status = 'PLAYING';
-        gameState.votes = {};
-        io.emit('stateUpdate', getPublicState());
-      }
-    }
-  });
-
   socket.on('disconnect', () => {
     delete gameState.players[socket.id];
     io.emit('stateUpdate', getPublicState());
@@ -139,9 +149,11 @@ function getPublicState() {
       id: p.id,
       name: p.name,
       alive: p.alive,
-      role: p.role
+      role: p.role,
+      tasks: p.tasks
     }))
   };
 }
 
-server.listen(3000, () => console.log('Server active on port 3000'));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server active on port ${PORT}`));
