@@ -8,15 +8,20 @@ const io = new Server(server);
 
 app.use(express.static('public'));
 
-let customTasks = [
+// Default master task pool
+let masterTaskPool = [
   "Water the biology class plant",
   "Count 10 lockers on the 2nd floor",
   "Wipe the main hallway whiteboard",
-  "Throw away 1 piece of trash in the cafeteria"
+  "Throw away 1 piece of trash in the cafeteria",
+  "Inspect the library bookshelf",
+  "Check the gym door lock",
+  "Clean the teacher's desk whiteboard eraser",
+  "Count the steps on the main staircase"
 ];
 
 let gameState = {
-  status: 'LOBBY', // LOBBY, PLAYING, MEETING, ENDED
+  status: 'LOBBY',
   players: {},
   impostorId: null,
   deadBodies: [],
@@ -24,21 +29,24 @@ let gameState = {
 };
 
 io.on('connection', (socket) => {
+  // Sync tasks on connect
+  socket.emit('tasksUpdated', masterTaskPool);
+
   socket.on('addTask', (taskText) => {
-    if (taskText.trim()) {
-      customTasks.push(taskText.trim());
-      io.emit('tasksUpdated', customTasks);
+    if (taskText && taskText.trim()) {
+      masterTaskPool.push(taskText.trim());
+      io.emit('tasksUpdated', masterTaskPool);
     }
   });
 
   socket.on('getTasks', () => {
-    socket.emit('tasksUpdated', customTasks);
+    socket.emit('tasksUpdated', masterTaskPool);
   });
 
   socket.on('joinGame', (name) => {
     gameState.players[socket.id] = {
       id: socket.id,
-      name: name,
+      name: name || `Player-${socket.id.substring(0, 4)}`,
       role: 'Crewmate',
       alive: true,
       tasks: []
@@ -46,37 +54,49 @@ io.on('connection', (socket) => {
     io.emit('stateUpdate', getPublicState());
   });
 
+  // START GAME (Triggers from PC Host or Phone)
   socket.on('startGame', () => {
-    const ids = Object.keys(gameState.players);
-    if (ids.length < 3) return;
+    const playerIds = Object.keys(gameState.players);
 
-    const impostorIndex = Math.floor(Math.random() * ids.length);
-    gameState.impostorId = ids[impostorIndex];
+    // If fewer than 2 players, alert clients and prevent start
+    if (playerIds.length < 2) {
+      io.emit('gameStartError', 'At least 2 players are needed to start!');
+      return;
+    }
 
-    ids.forEach((id) => {
+    // 1. Pick 1 Impostor randomly
+    const impostorIndex = Math.floor(Math.random() * playerIds.length);
+    gameState.impostorId = playerIds[impostorIndex];
+
+    // 2. Assign Roles and Unique Randomized Tasks
+    playerIds.forEach((id) => {
       const player = gameState.players[id];
       player.alive = true;
       player.role = (id === gameState.impostorId) ? 'Impostor' : 'Crewmate';
 
       if (player.role === 'Crewmate') {
-        const shuffled = [...customTasks].sort(() => 0.5 - Math.random());
-        player.tasks = shuffled.slice(0, 3).map(t => ({ text: t, done: false }));
+        // Shuffle master task pool randomly for each individual player
+        const shuffled = [...masterTaskPool].sort(() => 0.5 - Math.random());
+        // Select 3 unique randomized tasks
+        const assignedTasks = shuffled.slice(0, 3);
+        player.tasks = assignedTasks.map(t => ({ text: t, done: false }));
       } else {
-        player.tasks = [];
+        player.tasks = []; // Impostor gets no real tasks
       }
     });
 
     gameState.status = 'PLAYING';
     gameState.deadBodies = [];
+    gameState.votes = {};
+
     io.emit('gameStarted');
     io.emit('stateUpdate', getPublicState());
   });
 
-  // HOST OVERRIDE CONTROLS
   socket.on('hostForceMeeting', () => {
     if (gameState.status === 'PLAYING') {
       gameState.status = 'MEETING';
-      io.emit('notifyEmergencyMeeting', { caller: 'HOST COMMAND' });
+      io.emit('notifyEmergencyMeeting', { caller: 'HOST CONTROL' });
       io.emit('stateUpdate', getPublicState());
     }
   });
@@ -111,7 +131,7 @@ io.on('connection', (socket) => {
     gameState.status = 'MEETING';
 
     io.emit('notifyBodyFound', {
-      reporter: gameState.players[socket.id]?.name || 'Someone',
+      reporter: gameState.players[socket.id]?.name || 'A player',
       victim: victimName
     });
     io.emit('stateUpdate', getPublicState());
@@ -122,14 +142,14 @@ io.on('connection', (socket) => {
     gameState.status = 'MEETING';
 
     io.emit('notifyEmergencyMeeting', {
-      caller: gameState.players[socket.id]?.name
+      caller: gameState.players[socket.id]?.name || 'A player'
     });
     io.emit('stateUpdate', getPublicState());
   });
 
   socket.on('completeTask', (taskIndex) => {
     const player = gameState.players[socket.id];
-    if (player && player.tasks[taskIndex]) {
+    if (player && player.tasks[taskIndex] && player.role === 'Crewmate') {
       player.tasks[taskIndex].done = true;
       io.emit('stateUpdate', getPublicState());
     }
@@ -156,4 +176,4 @@ function getPublicState() {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server active on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
