@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="manifest" href="/manifest.json">
+  <title>School Among Us</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: white; padding: 15px; margin: 0; text-align: center; }
+    .card { background: #222; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
+    button { width: 100%; padding: 12px; margin: 5px 0; border-radius: 8px; border: none; font-size: 16px; font-weight: bold; }
+    .btn-red { background: #e74c3c; color: white; }
+    .btn-orange { background: #e67e22; color: white; }
+    .btn-blue { background: #3498db; color: white; }
+    .hidden { display: none; }
+    .notification-screen {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      z-index: 1000; animation: flash 0.5s infinite alternate;
+    }
+    @keyframes flash { from { opacity: 1; } to { opacity: 0.7; } }
+  </style>
+</head>
+<body>
+
+  <div id="overlay" class="notification-screen hidden">
+    <h1 id="overlay-title" style="font-size: 2.5rem; margin:0;"></h1>
+    <h3 id="overlay-desc"></h3>
+  </div>
+
+  <h1>📱 Among Us (School Edition)</h1>
+
+  <div id="sec-lobby" class="card">
+    <input type="text" id="p-name" placeholder="Enter Your Name" style="width:90%; padding:10px; margin-bottom:10px;">
+    <button class="btn-blue" onclick="joinGame()">Join Lobby</button>
+    <hr>
+    <h3>School Task Creator</h3>
+    <input type="text" id="new-task" placeholder="e.g., Clean Lab Desk 3" style="width:90%; padding:8px;">
+    <button class="btn-blue" onclick="createTask()">+ Add Task to Game</button>
+    <ul id="task-pool-list" style="text-align:left; font-size:12px;"></ul>
+    <button class="btn-red" onclick="startGame()">Start Game</button>
+  </div>
+
+  <div id="sec-play" class="card hidden">
+    <h2 id="role-text"></h2>
+    
+    <div id="impostor-panel" class="hidden">
+      <h3 style="color:#e74c3c;">Kill Controls</h3>
+      <div id="kill-buttons"></div>
+    </div>
+
+    <div id="tasks-panel">
+      <h3>Your Tasks</h3>
+      <div id="my-task-list"></div>
+    </div>
+
+    <hr>
+    <div id="reported-bodies-panel"></div>
+    <button class="btn-orange" onclick="callEmergency()">🔔 CALL EMERGENCY MEETING</button>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let myId = null;
+
+    if ("Notification" in window) { Notification.requestPermission(); }
+
+    socket.on('connect', () => {
+      myId = socket.id;
+      socket.emit('getTasks');
+    });
+
+    socket.on('tasksUpdated', (tasks) => {
+      document.getElementById('task-pool-list').innerHTML = tasks.map(t => `<li>${t}</li>`).join('');
+    });
+
+    function joinGame() {
+      const name = document.getElementById('p-name').value;
+      if (name) socket.emit('joinGame', name);
+    }
+
+    function createTask() {
+      const input = document.getElementById('new-task');
+      if (input.value) {
+        socket.emit('addTask', input.value);
+        input.value = '';
+      }
+    }
+
+    function startGame() { socket.emit('startGame'); }
+    function callEmergency() { socket.emit('callEmergencyMeeting'); }
+    function reportBody(victimName) { socket.emit('reportDeadBody', victimName); }
+    function kill(id) { socket.emit('killPlayer', id); }
+
+    socket.on('notifyBodyFound', (data) => {
+      triggerAlarm({
+        title: "🩸 DEAD BODY REPORTED!",
+        desc: `${data.reporter} found ${data.victim}'s body!`,
+        bgColor: "#900C3F",
+        vibratePattern: [500, 100, 500, 100, 500],
+        soundPitch: 300
+      });
+    });
+
+    socket.on('notifyEmergencyMeeting', (data) => {
+      triggerAlarm({
+        title: "🚨 EMERGENCY MEETING!",
+        desc: `${data.caller} pressed the emergency button!`,
+        bgColor: "#d35400",
+        vibratePattern: [1000, 200, 1000],
+        soundPitch: 600
+      });
+    });
+
+    function triggerAlarm(config) {
+      const overlay = document.getElementById('overlay');
+      document.getElementById('overlay-title').innerText = config.title;
+      document.getElementById('overlay-desc').innerText = config.desc;
+      overlay.style.backgroundColor = config.bgColor;
+      overlay.classList.remove('hidden');
+
+      if ("vibrate" in navigator) { navigator.vibrate(config.vibratePattern); }
+      if (Notification.permission === "granted") { new Notification(config.title, { body: config.desc }); }
+
+      playAudioAlarm(config.soundPitch);
+
+      setTimeout(() => { overlay.classList.add('hidden'); }, 3500);
+    }
+
+    function playAudioAlarm(pitch) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(pitch, ctx.currentTime);
+      osc.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 1.5);
+    }
+
+    socket.on('gameStarted', () => {
+      document.getElementById('sec-lobby').classList.add('hidden');
+      document.getElementById('sec-play').classList.remove('hidden');
+    });
+
+    socket.on('youDied', () => {
+      alert("You were killed! You are now a silent ghost.");
+      document.body.style.filter = "grayscale(100%)";
+    });
+
+    socket.on('stateUpdate', (state) => {
+      const me = state.players.find(p => p.id === myId);
+      if (!me) return;
+
+      document.getElementById('role-text').innerText = `Role: ${me.role}`;
+
+      if (me.role === 'Impostor') {
+        document.getElementById('impostor-panel').classList.remove('hidden');
+        document.getElementById('kill-buttons').innerHTML = state.players
+          .filter(p => p.id !== myId && p.alive)
+          .map(p => `<button class="btn-red" onclick="kill('${p.id}')">Kill ${p.name}</button>`).join('');
+      }
+
+      const bodyPanel = document.getElementById('reported-bodies-panel');
+      if (state.deadBodies.length > 0) {
+        bodyPanel.innerHTML = state.deadBodies
+          .map(b => `<button class="btn-red" onclick="reportBody('${b.name}')">REPORT ${b.name}'s BODY</button>`).join('');
+      } else {
+        bodyPanel.innerHTML = '';
+      }
+    });
+  </script>
+</body>
+</html>
